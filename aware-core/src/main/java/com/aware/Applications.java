@@ -41,8 +41,11 @@ import com.aware.utils.Scheduler;
 import org.json.JSONException;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Set;
+
 import android.graphics.Rect;
 
 /**
@@ -95,9 +98,11 @@ public class Applications extends AccessibilityService {
 
     ArrayList<ContentValues> contentBuffer = new ArrayList<ContentValues>();
 
-    ArrayList<Integer> textBuffer = new ArrayList<Integer>();
+    Set<Integer> textBuffer = new HashSet<>();
 
     int TEXT_BUFFER_LIMIT = 100;
+
+    private String previousForegroundApp = "";
 
 //    int mDebugDepth = 0;
 
@@ -126,7 +131,9 @@ public class Applications extends AccessibilityService {
 
             mNodeInfo.getBoundsInScreen(rect);
 
-            currScreenText += mNodeInfo.getText() + "***" + rect.toString() + "||"; // Add division sign for the tree
+//            currScreenText += mNodeInfo.getText() + "***" + rect.toString() + "||"; // Add division sign for the tree
+            currScreenText += mNodeInfo.getText() + "||"; // Add division sign for the tree delete the coordination3
+
         }
 
         if (mNodeInfo.getChildCount() < 1) return;
@@ -168,12 +175,9 @@ public class Applications extends AccessibilityService {
     public void onAccessibilityEvent(AccessibilityEvent event) {
         if (event.getPackageName() == null) return;
 
-
-
-
-        // if text buffer is full then send all contents in the content buffer
-        if (textBuffer.size() == TEXT_BUFFER_LIMIT){
-
+        // if content buffer is full then send all contents in the content buffer
+        if (contentBuffer.size() == TEXT_BUFFER_LIMIT){
+            // Log.d("Screen_Text", "==========LIMIT REACH============");
 
             for (ContentValues content: contentBuffer){
                 getContentResolver().insert(ScreenText_Provider.ScreenTextData.CONTENT_URI, content);
@@ -184,6 +188,8 @@ public class Applications extends AccessibilityService {
             }
             textBuffer.clear();
             contentBuffer.clear();
+
+            // Log.d("Screen_Text", "==========CLEAN BUFFER============");
         }
 
 
@@ -193,7 +199,19 @@ public class Applications extends AccessibilityService {
         // 0: only track data of the inclusive packages for screentext function
         // 1: only track data except the exclusive packages for screentext function
         // 2: by default track all apps
-        int criteria = (int) Long.parseLong(Aware.getSetting(getApplicationContext(), Aware_Preferences.PACKAGE_SPECIFICATION));
+
+
+        int criteria = 2; // Default value
+
+        try {
+            String criteriaSetting = Aware.getSetting(getApplicationContext(), Aware_Preferences.PACKAGE_SPECIFICATION);
+            if (!criteriaSetting.isEmpty()) {
+                criteria = Integer.parseInt(criteriaSetting);
+            }
+        } catch (NumberFormatException e) {
+            Log.e("Error", "Failed to parse PACKAGE_SPECIFICATION setting: " + e.getMessage());
+        }
+
         if (criteria == 0 || criteria == 1){
             String app_names = Aware.getSetting(getApplicationContext(), Aware_Preferences.PACKAGE_NAMES);
             String curr_app = event.getPackageName().toString();
@@ -208,30 +226,29 @@ public class Applications extends AccessibilityService {
 
 
         if (Aware.getSetting(getApplicationContext(), Aware_Preferences.STATUS_SCREENTEXT).equals("true") && getScreenStatus() == 0) {
+            // Get the current foreground app
+            String currentForegroundApp = event.getPackageName().toString();
 
-            // get text tree
+            // Get text tree
             AccessibilityNodeInfo mNodeInfo = event.getSource();
             textTree(mNodeInfo);
 
-
-            if (!currScreenText.equals("") && track_screentext && !event.isPassword()) {
-
+            if (!currScreenText.isEmpty() && track_screentext && !event.isPassword()) {
                 ContentValues screenText = new ContentValues();
                 screenText.put(ScreenText_Provider.ScreenTextData.TIMESTAMP, System.currentTimeMillis());
                 screenText.put(ScreenText_Provider.ScreenTextData.DEVICE_ID, Aware.getSetting(getApplicationContext(), Aware_Preferences.DEVICE_ID));
 
-                if (event.getPackageName() != null){
+                if (event.getPackageName() != null) {
                     screenText.put(ScreenText_Provider.ScreenTextData.PACKAGE_NAME, event.getPackageName().toString());
-                } else{
+                } else {
                     screenText.put(ScreenText_Provider.ScreenTextData.PACKAGE_NAME, "");
                 }
 
                 if (event.getClassName() != null) {
                     screenText.put(ScreenText_Provider.ScreenTextData.CLASS_NAME, event.getClassName().toString());
-                } else{
+                } else {
                     screenText.put(ScreenText_Provider.ScreenTextData.CLASS_NAME, "");
                 }
-
 
                 screenText.put(ScreenText_Provider.ScreenTextData.USER_ACTION, event.getAction());
                 screenText.put(ScreenText_Provider.ScreenTextData.EVENT_TYPE, event.getEventType());
@@ -239,17 +256,44 @@ public class Applications extends AccessibilityService {
 
                 int hashedText = currScreenText.hashCode();
 
-                // Add to content: get rid of the duplicate text
-                if (!textBuffer.contains(hashedText)){
-                    textBuffer.add(hashedText);
-                    contentBuffer.add(screenText);
+                // Check if the foreground app has changed
+                if (!currentForegroundApp.equals(previousForegroundApp)) {
+//                    // Log.d("Screen_Text", "==========App Switch============");
+                    if (!textBuffer.contains(hashedText)) {
+                        textBuffer.add(hashedText);
+                        contentBuffer.add(screenText);
+//                       // Log.d("Screen_Text", "Add ContentText: " + currScreenText);
+                    }
 
-//                    Log.d(TAG,"Buffer size：" + textBuffer.size());
+
+                    // Log.d("Screen_Text", "Current ContentBuffer Size: " + contentBuffer.size());
+
+                    for (ContentValues content: contentBuffer){
+                        getContentResolver().insert(ScreenText_Provider.ScreenTextData.CONTENT_URI, content);
+
+                        if (awareSensor != null) awareSensor.onScreentext(content);
+                        Intent screen_text_data = new Intent(ScreenText.ACTION_SCREENTEXT_DETECT);
+                        sendBroadcast(screen_text_data);
+                    }
+
+                    textBuffer.clear();
+                    contentBuffer.clear();
+                    // Log.d("Screen_Text", "==========CLEAN BUFFER============");
+                    // Update the previous foreground app
+                    previousForegroundApp = currentForegroundApp;
+
+                } else {
+                    // Add to content: get rid of the duplicate text
+                    if (!textBuffer.contains(hashedText)) {
+                        textBuffer.add(hashedText);
+                        contentBuffer.add(screenText);
+                        // Log.d("Screen_Text", "Add ContentText: " + currScreenText);
+                    }
                 }
 
                 currScreenText = "";
-
             }
+
         }
 
 
